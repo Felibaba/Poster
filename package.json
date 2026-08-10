@@ -1,0 +1,16 @@
+{
+  "name": "movie-poster-generator",
+  "version": "1.0.0",
+  "description": "Movie title -> TMDB fetch -> branded poster graphic generator",
+  "main": "app.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "node-fetch": "^2.7.0",
+    "sharp": "^0.33.4",
+    "dotenv": "^16.4.5"
+  }
+}
