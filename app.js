@@ -19,12 +19,14 @@ const PORT = process.env.PORT || 3000;
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
 
 const TMDB_BASE = 'https://api.themoviedb.org/3';
-const IMAGE_BASE = 'https://image.tmdb.org/t/p/w780';
+// w500 instead of w780 -> smaller download from TMDB, faster generation
+const IMAGE_BASE = 'https://image.tmdb.org/t/p/w500';
 
 const CANVAS_WIDTH = 1080;
 const CANVAS_HEIGHT = 1350;
 const POSTER_HEIGHT = 950;
 const TEXT_HEIGHT = CANVAS_HEIGHT - POSTER_HEIGHT;
+const JPEG_QUALITY = 82; // 0-100, lower = smaller file / faster upload, less sharp
 
 // TMDB genre IDs -> names (static list from TMDB, movies only)
 const GENRE_MAP = {
@@ -150,7 +152,10 @@ async function generatePosterImage({ posterUrl, title, hook, rating, genres, tem
       { input: posterResized, top: 0, left: 0 },
       { input: Buffer.from(overlaySvg), top: 0, left: 0 }
     ])
-    .png()
+    // JPEG instead of PNG: photographic content compresses far smaller
+    // (usually 5-10x less data) with barely any visible quality loss
+    // at this quality level, which is what actually cuts load time.
+    .jpeg({ quality: JPEG_QUALITY, mozjpeg: true })
     .toBuffer();
 }
 
@@ -198,8 +203,8 @@ app.get('/generate', async (req, res) => {
       templateKey: template
     });
 
-    res.set('Content-Type', 'image/png');
-    res.set('Content-Disposition', `inline; filename="${movie.title.replace(/\s+/g, '_')}.png"`);
+    res.set('Content-Type', 'image/jpeg');
+    res.set('Content-Disposition', `inline; filename="${movie.title.replace(/\s+/g, '_')}.jpg"`);
     res.send(imageBuffer);
   } catch (err) {
     console.error(err);
