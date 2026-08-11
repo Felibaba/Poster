@@ -47,10 +47,7 @@ const TEMPLATES = {
 };
 
 // ── TMDB lookup ─────────────────────────────────────────────────
-async function fetchMovie(title, apiKey) {
-  if (!apiKey) throw new Error('Missing TMDB_API_KEY');
-  if (!title) throw new Error('Missing movie title');
-
+async function searchMovie(title, apiKey) {
   const searchUrl = `${TMDB_BASE}/search/movie?api_key=${apiKey}&query=${encodeURIComponent(title)}`;
   const res = await fetch(searchUrl);
   if (!res.ok) throw new Error(`TMDB search failed: ${res.status}`);
@@ -58,7 +55,59 @@ async function fetchMovie(title, apiKey) {
   const data = await res.json();
   const movie = data.results && data.results[0];
   if (!movie) throw new Error(`No TMDB results for "${title}"`);
-  if (!movie.poster_path) throw new Error(`"${movie.title}" has no poster available`);
+  return movie;
+}
+
+// Calls TMDB's dedicated images endpoint, which is the only place
+// backdrops, logos, and every language variant actually live.
+// include_image_language lets you ask for e.g. "en,null" so you get
+// English-tagged images plus language-neutral ones (most logos/backdrops
+// have no dialogue baked in, so they're tagged null).
+async function fetchMovieImages(movieId, apiKey, language) {
+  const langParam = language ? `&include_image_language=${language},null` : '';
+  const url = `${TMDB_BASE}/movie/${movieId}/images?api_key=${apiKey}${langParam}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`TMDB images fetch failed: ${res.status}`);
+
+  const data = await res.json();
+  return {
+    posters: data.posters || [],   // portrait, ~2:3 ratio
+    backdrops: data.backdrops || [], // landscape, ~16:9 ratio
+    logos: data.logos || []        // transparent PNGs, title treatments
+  };
+}
+
+// Picks the best image of a given type from the images array:
+// prefers the requested language, falls back to the highest-voted one.
+function pickBestImage(images, language) {
+  if (!images.length) return null;
+  const inLanguage = language ? images.filter(img => img.iso_639_1 === language) : [];
+  const pool = inLanguage.length ? inLanguage : images;
+  return pool.sort((a, b) => (b.vote_average || 0) - (a.vote_average || 0))[0];
+}
+
+/**
+ * imageType: 'poster' (default), 'backdrop', or 'logo'
+ * language: ISO 639-1 code e.g. 'en' — omit to just take TMDB's top pick
+ */
+async function fetchMovie(title, apiKey, { imageType = 'poster', language } = {}) {
+  if (!apiKey) throw new Error('Missing TMDB_API_KEY');
+  if (!title) throw new Error('Missing movie title');
+
+  const movie = await searchMovie(title, apiKey);
+
+  let filePath;
+  if (imageType === 'poster' && !language) {
+    // fast path: search results already include a default poster_path,
+    // no need for the extra /images call
+    filePath = movie.poster_path;
+  } else {
+    const images = await fetchMovieImages(movie.id, apiKey, language);
+    const chosen = pickBestImage(images[`${imageType}s`] || [], language);
+    filePath = chosen ? chosen.file_path : movie.poster_path;
+  }
+
+  if (!filePath) throw new Error(`"${movie.title}" has no ${imageType} available`);
 
   return {
     id: movie.id,
@@ -67,7 +116,8 @@ async function fetchMovie(title, apiKey) {
     releaseYear: (movie.release_date || '').slice(0, 4),
     rating: movie.vote_average ? movie.vote_average.toFixed(1) : null,
     genres: (movie.genre_ids || []).map(id => GENRE_MAP[id]).filter(Boolean),
-    posterUrl: `${IMAGE_BASE}${movie.poster_path}`
+    imageType,
+    posterUrl: `${IMAGE_BASE}${filePath}`
   };
 }
 
@@ -180,6 +230,15 @@ app.get('/', (req, res) => {
           <label>Template</label><br/>
           <select name="template" style="width:100%; padding:8px;">${templateOptions}</select><br/><br/>
 
+          <label>Image type</label><br/>
+          <select name="image" style="width:100%; padding:8px;">
+            <option value="poster">Poster (portrait)</option>
+            <option value="backdrop">Backdrop (landscape)</option>
+          </select><br/><br/>
+
+          <label>Language (optional, e.g. en, fr, ja)</label><br/>
+          <input name="lang" style="width:100%; padding:8px;" placeholder="en"/><br/><br/>
+
           <button type="submit" style="padding:10px 20px;">Generate</button>
         </form>
       </body>
@@ -189,10 +248,11 @@ app.get('/', (req, res) => {
 
 app.get('/generate', async (req, res) => {
   try {
-    const { title, hook, template } = req.query;
+    const { title, hook, template, image, lang } = req.query;
     if (!title) return res.status(400).json({ error: 'title query param is required' });
 
-    const movie = await fetchMovie(title, TMDB_API_KEY);
+    const imageType = ['poster', 'backdrop', 'logo'].includes(image) ? image : 'poster';
+    const movie = await fetchMovie(title, TMDB_API_KEY, { imageType, language: lang });
 
     const imageBuffer = await generatePosterImage({
       posterUrl: movie.posterUrl,
