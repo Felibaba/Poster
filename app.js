@@ -242,7 +242,9 @@ async function imageToVideo(imageBuffer, { width, height }, seconds = 3) {
   const outHeight = 640; // 9:16, smaller than the X image (1080x1350) — low memory footprint
   const fps = 20;
   const frames = seconds * fps;
-  const zoomExpr = `min(zoom+0.0006,1.06)`;
+  // Starts zoomed in slightly and eases back out to the full frame —
+  // so the shot opens tight and settles to show everything by the end.
+  const zoomExpr = `if(eq(on,0),1.06,max(zoom-0.0006,1.0))`;
   const filter = `zoompan=z='${zoomExpr}':d=${frames}:s=${outWidth}x${outHeight}:fps=${fps},format=yuv420p`;
 
   const args = [
