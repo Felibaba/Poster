@@ -1,9 +1,11 @@
 // ─────────────────────────────────────────────────────────────────
 // Movie Poster Generator — single-file version
-// Title in -> TMDB fetch -> branded 1080x1350 PNG out
+// Title in -> TMDB fetch -> branded image (or short video) out
 //
 // Setup:
 //   npm install express node-fetch@2 sharp dotenv
+//   Install ffmpeg on your system (brew install ffmpeg / apt install ffmpeg)
+//     — required only for the /generate-video (TikTok) route
 //   Create a .env file with: TMDB_API_KEY=your_key_here
 //   node app.js
 //   Open http://localhost:3000
@@ -13,6 +15,11 @@ require('dotenv').config();
 const express = require('express');
 const fetch = require('node-fetch');
 const sharp = require('sharp');
+const { execFile } = require('child_process');
+const fs = require('fs/promises');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -22,10 +29,11 @@ const TMDB_BASE = 'https://api.themoviedb.org/3';
 // w500 instead of w780 -> smaller download from TMDB, faster generation
 const IMAGE_BASE = 'https://image.tmdb.org/t/p/w500';
 
-const CANVAS_WIDTH = 1080;
-const CANVAS_HEIGHT = 1350;
-const POSTER_HEIGHT = 950;
-const TEXT_HEIGHT = CANVAS_HEIGHT - POSTER_HEIGHT;
+// Horizontal/portrait layout — used for X posts (image)
+const LAYOUT_POST = { width: 1080, height: 1350, posterHeight: 950 };
+// Vertical layout — used for TikTok (9:16, feeds into the video step)
+const LAYOUT_VIDEO = { width: 1080, height: 1920, posterHeight: 1500 };
+
 const JPEG_QUALITY = 82; // 0-100, lower = smaller file / faster upload, less sharp
 
 // TMDB genre IDs -> names (static list from TMDB, movies only)
@@ -146,7 +154,9 @@ function wrapText(text, maxCharsPerLine) {
   return lines;
 }
 
-function buildOverlaySvg({ title, hook, rating, genres, templateKey }) {
+function buildOverlaySvg({ title, hook, rating, genres, templateKey, layout }) {
+  const { width, height, posterHeight } = layout;
+  const textHeight = height - posterHeight;
   const template = TEMPLATES[templateKey] || TEMPLATES.tonights_pick;
   const hookLines = wrapText(hook || '', 42).slice(0, 3);
   const genreText = escapeXml((genres || []).slice(0, 2).join(' / '));
@@ -156,7 +166,7 @@ function buildOverlaySvg({ title, hook, rating, genres, templateKey }) {
     .join('');
 
   return `
-  <svg width="${CANVAS_WIDTH}" height="${CANVAS_HEIGHT}">
+  <svg width="${width}" height="${height}">
     <defs>
       <style>
         .label { font: 700 34px sans-serif; fill: ${template.accent}; letter-spacing: 2px; }
@@ -166,34 +176,34 @@ function buildOverlaySvg({ title, hook, rating, genres, templateKey }) {
       </style>
     </defs>
 
-    <rect x="0" y="${POSTER_HEIGHT}" width="${CANVAS_WIDTH}" height="${TEXT_HEIGHT}" fill="#0d0d0d"/>
-    <rect x="0" y="${POSTER_HEIGHT}" width="${CANVAS_WIDTH}" height="6" fill="${template.accent}"/>
+    <rect x="0" y="${posterHeight}" width="${width}" height="${textHeight}" fill="#0d0d0d"/>
+    <rect x="0" y="${posterHeight}" width="${width}" height="6" fill="${template.accent}"/>
 
-    <text x="50%" y="${POSTER_HEIGHT + 65}" text-anchor="middle" class="label">${escapeXml(template.label)}</text>
-    <text x="50%" y="${POSTER_HEIGHT + 125}" text-anchor="middle" class="title">${escapeXml(title)}</text>
-    <text x="50%" y="${POSTER_HEIGHT + 190}" text-anchor="middle" class="hook">${hookTspans}</text>
+    <text x="50%" y="${posterHeight + 65}" text-anchor="middle" class="label">${escapeXml(template.label)}</text>
+    <text x="50%" y="${posterHeight + 125}" text-anchor="middle" class="title">${escapeXml(title)}</text>
+    <text x="50%" y="${posterHeight + 190}" text-anchor="middle" class="hook">${hookTspans}</text>
 
-    <text x="50%" y="${CANVAS_HEIGHT - 40}" text-anchor="middle" class="meta">
+    <text x="50%" y="${height - 40}" text-anchor="middle" class="meta">
       ${rating ? `⭐ ${escapeXml(String(rating))}/10` : ''}${rating && genreText ? '   •   ' : ''}${genreText}
     </text>
   </svg>`;
 }
 
-async function generatePosterImage({ posterUrl, title, hook, rating, genres, templateKey }) {
+async function generatePosterImage({ posterUrl, title, hook, rating, genres, templateKey, layout = LAYOUT_POST }) {
   const posterRes = await fetch(posterUrl);
   if (!posterRes.ok) throw new Error(`Failed to download poster: ${posterRes.status}`);
   const posterBuffer = Buffer.from(await posterRes.arrayBuffer());
 
   const posterResized = await sharp(posterBuffer)
-    .resize(CANVAS_WIDTH, POSTER_HEIGHT, { fit: 'cover' })
+    .resize(layout.width, layout.posterHeight, { fit: 'cover' })
     .toBuffer();
 
-  const overlaySvg = buildOverlaySvg({ title, hook, rating, genres, templateKey });
+  const overlaySvg = buildOverlaySvg({ title, hook, rating, genres, templateKey, layout });
 
   return sharp({
     create: {
-      width: CANVAS_WIDTH,
-      height: CANVAS_HEIGHT,
+      width: layout.width,
+      height: layout.height,
       channels: 3,
       background: '#0d0d0d'
     }
@@ -207,6 +217,50 @@ async function generatePosterImage({ posterUrl, title, hook, rating, genres, tem
     // at this quality level, which is what actually cuts load time.
     .jpeg({ quality: JPEG_QUALITY, mozjpeg: true })
     .toBuffer();
+}
+
+// ── Video generation (ffmpeg Ken Burns zoom, for TikTok) ──────────
+// Takes a still JPEG buffer and turns it into a short vertical MP4:
+// slow zoom-in over `seconds`, silent (no audio track — add music
+// after upload inside TikTok to stay in their sound library and
+// avoid copyright flags on unlicensed tracks).
+async function imageToVideo(imageBuffer, { width, height }, seconds = 5) {
+  const tmpDir = os.tmpdir();
+  const id = crypto.randomUUID();
+  const inputPath = path.join(tmpDir, `${id}.jpg`);
+  const outputPath = path.join(tmpDir, `${id}.mp4`);
+
+  await fs.writeFile(inputPath, imageBuffer);
+
+  const frames = seconds * 25; // 25fps
+  const zoomExpr = `min(zoom+0.0015,1.3)`;
+  const filter = `[0:v]scale=8000:-1,zoompan=z='${zoomExpr}':d=${frames}:s=${width}x${height}:fps=25,format=yuv420p[v]`;
+
+  const args = [
+    '-y',
+    '-loop', '1',
+    '-i', inputPath,
+    '-filter_complex', filter,
+    '-map', '[v]',
+    '-t', String(seconds),
+    '-c:v', 'libx264',
+    '-pix_fmt', 'yuv420p',
+    outputPath
+  ];
+
+  try {
+    await new Promise((resolve, reject) => {
+      execFile('ffmpeg', args, (err, stdout, stderr) => {
+        if (err) return reject(new Error(`ffmpeg failed: ${stderr || err.message}`));
+        resolve();
+      });
+    });
+    return await fs.readFile(outputPath);
+  } finally {
+    // clean up temp files regardless of success/failure
+    await fs.unlink(inputPath).catch(() => {});
+    await fs.unlink(outputPath).catch(() => {});
+  }
 }
 
 // ── Routes ───────────────────────────────────────────────────────
@@ -298,7 +352,8 @@ app.get('/', (req, res) => {
           <label>Language (optional, e.g. en, fr, ja)</label>
           <input name="lang" placeholder="en"/>
 
-          <button type="submit">Generate</button>
+          <button type="submit" formaction="/generate">Generate Image (X)</button>
+          <button type="submit" formaction="/generate-video" style="margin-top:10px; background:#1e3a8a;">Generate Video (TikTok)</button>
         </form>
       </body>
     </html>
@@ -320,12 +375,46 @@ app.get('/generate', async (req, res) => {
       hook,
       rating: movie.rating,
       genres: movie.genres,
-      templateKey: template
+      templateKey: template,
+      layout: LAYOUT_POST
     });
 
     res.set('Content-Type', 'image/jpeg');
     res.set('Content-Disposition', `inline; filename="${movie.title.replace(/\s+/g, '_')}.jpg"`);
     res.send(imageBuffer);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// TikTok-ready short video: same pipeline, vertical 9:16 layout,
+// then a Ken Burns zoom turns the still into a few seconds of motion.
+app.get('/generate-video', async (req, res) => {
+  try {
+    const { title, hook, template, image, lang, seconds } = req.query;
+    if (!title) return res.status(400).json({ error: 'title query param is required' });
+    if (!hook) return res.status(400).json({ error: 'hook query param is required — write your own caption' });
+
+    const imageType = ['poster', 'backdrop', 'logo'].includes(image) ? image : 'poster';
+    const movie = await fetchMovie(title, TMDB_API_KEY, { imageType, language: lang });
+
+    const imageBuffer = await generatePosterImage({
+      posterUrl: movie.posterUrl,
+      title: movie.title,
+      hook,
+      rating: movie.rating,
+      genres: movie.genres,
+      templateKey: template,
+      layout: LAYOUT_VIDEO
+    });
+
+    const duration = Math.min(Math.max(parseInt(seconds, 10) || 5, 3), 10); // clamp 3-10s
+    const videoBuffer = await imageToVideo(imageBuffer, LAYOUT_VIDEO, duration);
+
+    res.set('Content-Type', 'video/mp4');
+    res.set('Content-Disposition', `inline; filename="${movie.title.replace(/\s+/g, '_')}.mp4"`);
+    res.send(videoBuffer);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
