@@ -224,7 +224,7 @@ async function generatePosterImage({ posterUrl, title, hook, rating, genres, tem
 // slow zoom-in over `seconds`, silent (no audio track — add music
 // after upload inside TikTok to stay in their sound library and
 // avoid copyright flags on unlicensed tracks).
-async function imageToVideo(imageBuffer, { width, height }, seconds = 5) {
+async function imageToVideo(imageBuffer, { width, height }, seconds = 3) {
   const tmpDir = os.tmpdir();
   const id = crypto.randomUUID();
   const inputPath = path.join(tmpDir, `${id}.jpg`);
@@ -232,22 +232,29 @@ async function imageToVideo(imageBuffer, { width, height }, seconds = 5) {
 
   await fs.writeFile(inputPath, imageBuffer);
 
-  const frames = seconds * 25; // 25fps
-  const zoomExpr = `min(zoom+0.0015,1.3)`;
-  // Upscale target kept modest (2x final width) rather than the common
-  // 8000px trick — that's far lighter on memory/CPU, which matters on
-  // Render's default instance sizes and avoids OOM crashes mid-encode.
-  const upscaleWidth = width * 2;
-  const filter = `[0:v]scale=${upscaleWidth}:-1,zoompan=z='${zoomExpr}':d=${frames}:s=${width}x${height}:fps=25,format=yuv420p[v]`;
+  // Lighter settings to stay within tight memory limits (e.g. Render free/starter tier):
+  // - no pre-upscale before zoompan (that scale step was the main memory hog)
+  // - smaller output resolution (720x1280 instead of 1080x1920) — still fine
+  //   for TikTok, just less raw pixel data per frame
+  // - lower fps and a gentler zoom range
+  // - ultrafast preset + single thread + higher CRF = far less RAM/CPU during encode
+  const outWidth = 720;
+  const outHeight = 1280;
+  const fps = 20;
+  const frames = seconds * fps;
+  const zoomExpr = `min(zoom+0.0012,1.15)`;
+  const filter = `zoompan=z='${zoomExpr}':d=${frames}:s=${outWidth}x${outHeight}:fps=${fps},format=yuv420p`;
 
   const args = [
     '-y',
     '-loop', '1',
     '-i', inputPath,
-    '-filter_complex', filter,
-    '-map', '[v]',
+    '-vf', filter,
     '-t', String(seconds),
     '-c:v', 'libx264',
+    '-preset', 'ultrafast',
+    '-crf', '30',
+    '-threads', '1',
     '-pix_fmt', 'yuv420p',
     outputPath
   ];
@@ -417,7 +424,7 @@ app.get('/generate-video', async (req, res) => {
       layout: LAYOUT_VIDEO
     });
 
-    const duration = Math.min(Math.max(parseInt(seconds, 10) || 5, 3), 10); // clamp 3-10s
+    const duration = Math.min(Math.max(parseInt(seconds, 10) || 3, 2), 4); // clamp 2-4s to keep memory use low
     const videoBuffer = await imageToVideo(imageBuffer, LAYOUT_VIDEO, duration);
 
     res.set('Content-Type', 'video/mp4');
