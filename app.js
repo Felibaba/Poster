@@ -217,29 +217,88 @@ app.get('/', (req, res) => {
 
   res.send(`
     <html>
-      <body style="font-family: sans-serif; max-width: 480px; margin: 40px auto;">
+      <head>
+        <style>
+          body {
+            font-family: 'Segoe UI', sans-serif;
+            max-width: 480px;
+            margin: 40px auto;
+            padding: 0 20px;
+            background: linear-gradient(160deg, #0b1220 0%, #142033 100%);
+            color: #e6edf7;
+            min-height: 100vh;
+          }
+          h2 {
+            color: #ffffff;
+            border-bottom: 2px solid #2563eb;
+            padding-bottom: 10px;
+          }
+          label {
+            display: block;
+            margin-top: 16px;
+            margin-bottom: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            color: #93c5fd;
+          }
+          input, textarea, select {
+            width: 100%;
+            padding: 10px 12px;
+            box-sizing: border-box;
+            background: #1a2740;
+            border: 1px solid #2d4066;
+            border-radius: 8px;
+            color: #e6edf7;
+            font-size: 15px;
+          }
+          input::placeholder, textarea::placeholder {
+            color: #6b84ab;
+          }
+          input:focus, textarea:focus, select:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
+          }
+          button {
+            margin-top: 24px;
+            width: 100%;
+            padding: 12px 20px;
+            background: #2563eb;
+            color: #ffffff;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.15s ease;
+          }
+          button:hover {
+            background: #1d4ed8;
+          }
+        </style>
+      </head>
+      <body>
         <h2>Movie Poster Generator</h2>
         <form action="/generate" method="GET" target="_blank">
-          <label>Movie title</label><br/>
-          <input name="title" style="width:100%; padding:8px;" placeholder="Inception" required/><br/><br/>
+          <label>Movie title</label>
+          <input name="title" placeholder="Inception" required/>
 
-          <label>Hook / caption</label><br/>
-          <textarea name="hook" style="width:100%; padding:8px;" rows="3"
-            placeholder="A movie that will make you question reality."></textarea><br/><br/>
+          <label>Hook / caption</label>
+          <textarea name="hook" rows="3" placeholder="A movie that will make you question reality." required></textarea>
 
-          <label>Template</label><br/>
-          <select name="template" style="width:100%; padding:8px;">${templateOptions}</select><br/><br/>
+          <label>Template</label>
+          <select name="template">${templateOptions}</select>
 
-          <label>Image type</label><br/>
-          <select name="image" style="width:100%; padding:8px;">
+          <label>Image type</label>
+          <select name="image">
             <option value="poster">Poster (portrait)</option>
             <option value="backdrop">Backdrop (landscape)</option>
-          </select><br/><br/>
+          </select>
 
-          <label>Language (optional, e.g. en, fr, ja)</label><br/>
-          <input name="lang" style="width:100%; padding:8px;" placeholder="en"/><br/><br/>
+          <label>Language (optional, e.g. en, fr, ja)</label>
+          <input name="lang" placeholder="en"/>
 
-          <button type="submit" style="padding:10px 20px;">Generate</button>
+          <button type="submit">Generate</button>
         </form>
       </body>
     </html>
@@ -250,6 +309,7 @@ app.get('/generate', async (req, res) => {
   try {
     const { title, hook, template, image, lang } = req.query;
     if (!title) return res.status(400).json({ error: 'title query param is required' });
+    if (!hook) return res.status(400).json({ error: 'hook query param is required — write your own caption' });
 
     const imageType = ['poster', 'backdrop', 'logo'].includes(image) ? image : 'poster';
     const movie = await fetchMovie(title, TMDB_API_KEY, { imageType, language: lang });
@@ -257,7 +317,7 @@ app.get('/generate', async (req, res) => {
     const imageBuffer = await generatePosterImage({
       posterUrl: movie.posterUrl,
       title: movie.title,
-      hook: hook || movie.overview.slice(0, 100),
+      hook,
       rating: movie.rating,
       genres: movie.genres,
       templateKey: template
