@@ -238,11 +238,11 @@ async function imageToVideo(imageBuffer, { width, height }, seconds = 3) {
   //   for TikTok, just less raw pixel data per frame
   // - lower fps and a gentler zoom range
   // - ultrafast preset + single thread + higher CRF = far less RAM/CPU during encode
-  const outWidth = 480;
-  const outHeight = 854; // 9:16, roughly half the pixel count of 720x1280
+  const outWidth = 360;
+  const outHeight = 640; // 9:16, smaller than the X image (1080x1350) — low memory footprint
   const fps = 20;
   const frames = seconds * fps;
-  const zoomExpr = `min(zoom+0.0012,1.15)`;
+  const zoomExpr = `min(zoom+0.0006,1.06)`;
   const filter = `zoompan=z='${zoomExpr}':d=${frames}:s=${outWidth}x${outHeight}:fps=${fps},format=yuv420p`;
 
   const args = [
