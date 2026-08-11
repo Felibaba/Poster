@@ -234,7 +234,11 @@ async function imageToVideo(imageBuffer, { width, height }, seconds = 5) {
 
   const frames = seconds * 25; // 25fps
   const zoomExpr = `min(zoom+0.0015,1.3)`;
-  const filter = `[0:v]scale=8000:-1,zoompan=z='${zoomExpr}':d=${frames}:s=${width}x${height}:fps=25,format=yuv420p[v]`;
+  // Upscale target kept modest (2x final width) rather than the common
+  // 8000px trick — that's far lighter on memory/CPU, which matters on
+  // Render's default instance sizes and avoids OOM crashes mid-encode.
+  const upscaleWidth = width * 2;
+  const filter = `[0:v]scale=${upscaleWidth}:-1,zoompan=z='${zoomExpr}':d=${frames}:s=${width}x${height}:fps=25,format=yuv420p[v]`;
 
   const args = [
     '-y',
@@ -250,10 +254,14 @@ async function imageToVideo(imageBuffer, { width, height }, seconds = 5) {
 
   try {
     await new Promise((resolve, reject) => {
-      execFile('ffmpeg', args, (err, stdout, stderr) => {
-        if (err) return reject(new Error(`ffmpeg failed: ${stderr || err.message}`));
-        resolve();
-      });
+      const child = execFile(
+        'ffmpeg', args,
+        { timeout: 25000, maxBuffer: 1024 * 1024 * 10 }, // 25s cap, 10MB stderr/stdout buffer
+        (err, stdout, stderr) => {
+          if (err) return reject(new Error(`ffmpeg failed: ${stderr || err.message}`));
+          resolve();
+        }
+      );
     });
     return await fs.readFile(outputPath);
   } finally {
