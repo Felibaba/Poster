@@ -35,6 +35,17 @@ const ZERNIO_BASE = 'https://zernio.com/api/v1';
 const ZERNIO_DEFAULT_ACCOUNT_ID = process.env.ZERNIO_DEFAULT_ACCOUNT_ID || '';
 const ZERNIO_DEFAULT_PLATFORM = process.env.ZERNIO_DEFAULT_PLATFORM || 'twitter';
 
+// TikTok is a special case in Zernio's API: it needs a `tiktokSettings` object
+// at the TOP LEVEL of the post body (not inside platformSpecificData like every
+// other platform), and two consent flags TikTok legally requires on every post.
+// Hardcoded here rather than via .env — change these directly if your creator
+// account's allowed privacy level differs (check with the tiktok/creator-info
+// endpoint: GET /v1/accounts/{accountId}/tiktok/creator-info?mediaType=video).
+const ZERNIO_TIKTOK_PRIVACY_LEVEL = 'PUBLIC_TO_EVERYONE';
+const ZERNIO_TIKTOK_ALLOW_COMMENT = true;
+const ZERNIO_TIKTOK_ALLOW_DUET = true;
+const ZERNIO_TIKTOK_ALLOW_STITCH = true;
+
 // Where the batch job queue is persisted, so pending jobs survive a restart.
 // NOTE: on platforms with an ephemeral filesystem (e.g. Render free/starter
 // tier), this file resets on redeploy — fine for jobs that'll fire within a
@@ -336,6 +347,26 @@ async function createZernioPost({ content, mediaUrl, mediaType, platform, accoun
     body.publishNow = true;
   }
 
+  // TikTok is a special case: settings go at the TOP LEVEL as `tiktokSettings`,
+  // not inside platforms[].platformSpecificData like other platforms — and
+  // content_preview_confirmed / express_consent_given are hard requirements,
+  // TikTok rejects the post without them.
+  if (platform === 'tiktok') {
+    body.tiktokSettings = {
+      privacy_level: ZERNIO_TIKTOK_PRIVACY_LEVEL,
+      allow_comment: ZERNIO_TIKTOK_ALLOW_COMMENT,
+      content_preview_confirmed: true,
+      express_consent_given: true
+    };
+    if (mediaType === 'video') {
+      body.tiktokSettings.allow_duet = ZERNIO_TIKTOK_ALLOW_DUET;
+      body.tiktokSettings.allow_stitch = ZERNIO_TIKTOK_ALLOW_STITCH;
+    } else if (mediaType === 'image') {
+      // TikTok treats non-video posts as a photo carousel and needs to be told so.
+      body.tiktokSettings.media_type = 'photo';
+    }
+  }
+
   const res = await fetch(`${ZERNIO_BASE}/posts`, {
     method: 'POST',
     headers: {
@@ -375,7 +406,7 @@ async function generateAndSchedule({
   let publicUrl, zernioMediaType, contentType, buffer;
 
   if (mediaKind === 'video') {
-    const duration = Math.min(Math.max(parseInt(videoSeconds, 10) || 3, 2), 4); // clamp 2-4s
+    const duration = Math.min(Math.max(parseInt(videoSeconds, 10) || 3, 3), 4); // clamp 3-4s (TikTok's API minimum is 3s)
     buffer = await imageToVideo(imageBuffer, layout, duration);
     contentType = 'video/mp4';
     zernioMediaType = 'video';
@@ -600,8 +631,8 @@ The Prestige | Two magicians, one obsession, no mercy."></textarea>
             <input id="batchInterval" type="number" min="1" value="10"/>
           </div>
           <div id="batchVideoSecondsWrap" style="display:none;">
-            <label>Video length (sec, 2-4)</label>
-            <input id="batchVideoSeconds" type="number" min="2" max="4" value="3"/>
+            <label>Video length (sec, 3-4)</label>
+            <input id="batchVideoSeconds" type="number" min="3" max="4" value="3"/>
           </div>
         </div>
 
