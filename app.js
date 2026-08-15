@@ -579,6 +579,47 @@ app.get('/', (req, res) => {
             overflow-y: auto;
           }
           .hint { font-size: 12px; color: #6b84ab; margin-top: 4px; }
+
+          .stat-pills { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+          .pill {
+            font-size: 12px; font-weight: 600; padding: 5px 10px; border-radius: 999px;
+            background: #1a2740; border: 1px solid #2d4066; color: #e6edf7;
+          }
+          .pill.done { color: #4ade80; border-color: #22582f; }
+          .pill.failed { color: #f87171; border-color: #5c2323; }
+          .pill.pending, .pill.processing { color: #fbbf24; border-color: #5c4a1f; }
+
+          #jobsFilters { display: flex; gap: 8px; margin-top: 12px; }
+          #jobsFilters select { flex: 1; }
+
+          table#jobsTable {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+            font-size: 12px;
+          }
+          table#jobsTable th, table#jobsTable td {
+            text-align: left;
+            padding: 7px 8px;
+            border-bottom: 1px solid #2d4066;
+            vertical-align: top;
+          }
+          table#jobsTable th {
+            color: #93c5fd;
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+            background: #101c30;
+          }
+          .status-badge {
+            display: inline-block; padding: 2px 8px; border-radius: 6px;
+            font-size: 11px; font-weight: 700; text-transform: uppercase;
+          }
+          .status-badge.done { background: #143820; color: #4ade80; }
+          .status-badge.failed { background: #3a1616; color: #f87171; }
+          .status-badge.pending, .status-badge.processing { background: #3a2f0f; color: #fbbf24; }
+          .error-text { color: #f87171; font-size: 11px; }
+          #jobsTableWrap { max-height: 420px; overflow-y: auto; border: 1px solid #2d4066; border-radius: 8px; }
         </style>
       </head>
       <body>
@@ -656,45 +697,121 @@ The Prestige | Two magicians, one obsession, no mercy."></textarea>
 
         <button id="batchSubmit">Schedule Batch</button>
         <p class="hint" id="batchProgress"></p>
-        <div id="batchResults"></div>
-        <div id="batchSummary" style="margin-top:10px; font-size:13px; color:#93c5fd;"></div>
+
+        <h3>Analytics — All Posts</h3>
+        <p class="hint">Every job ever queued, pulled from the server so it survives a page reload.</p>
+        <div class="stat-pills" id="statPills"></div>
+
+        <div id="jobsFilters">
+          <select id="filterStatus">
+            <option value="">All statuses</option>
+            <option value="done">Done</option>
+            <option value="failed">Failed</option>
+            <option value="processing">Processing</option>
+            <option value="pending">Pending</option>
+          </select>
+          <select id="filterPlatform">
+            <option value="">All platforms</option>
+            <option value="tiktok">TikTok</option>
+            <option value="twitter">X / Twitter</option>
+          </select>
+          <button id="refreshJobs" style="margin-top:0; width:auto; padding:8px 14px;">Refresh</button>
+        </div>
+
+        <div id="jobsTableWrap">
+          <table id="jobsTable">
+            <thead>
+              <tr>
+                <th>Status</th><th>Title</th><th>Media</th><th>Platform</th>
+                <th>Slot time</th><th>Detail</th>
+              </tr>
+            </thead>
+            <tbody id="jobsTableBody"></tbody>
+          </table>
+        </div>
 
         <script>
           const btn = document.getElementById('batchSubmit');
-          const resultsEl = document.getElementById('batchResults');
-          const summaryEl = document.getElementById('batchSummary');
           const progressEl = document.getElementById('batchProgress');
           const mediaKindSel = document.getElementById('batchMediaKind');
           const videoSecondsWrap = document.getElementById('batchVideoSecondsWrap');
+          const statPillsEl = document.getElementById('statPills');
+          const jobsBodyEl = document.getElementById('jobsTableBody');
+          const filterStatusEl = document.getElementById('filterStatus');
+          const filterPlatformEl = document.getElementById('filterPlatform');
+          const refreshBtn = document.getElementById('refreshJobs');
 
           let pollTimer = null;
+          let autoRefreshTimer = null;
 
           mediaKindSel.addEventListener('change', () => {
             videoSecondsWrap.style.display = mediaKindSel.value === 'video' ? 'block' : 'none';
           });
 
-          function renderStatus(data) {
-            summaryEl.textContent =
-              data.total + ' total — ' +
-              data.done + ' done, ' +
-              data.processing + ' processing, ' +
-              data.pending + ' waiting, ' +
-              data.failed + ' failed';
-
-            resultsEl.textContent = data.jobs.map(j => {
-              const when = j.status === 'done' || j.status === 'processing'
-                ? 'slot ' + j.scheduledFor
-                : 'generates at ' + j.generateAt + ', slot ' + j.scheduledFor;
-              const extra = j.status === 'failed' ? ' — ' + j.error : '';
-              return '[' + j.status.toUpperCase() + '] ' + j.title + ' (' + j.mediaKind + ') — ' + when + extra;
-            }).join('\\n');
+          function escapeHtml(str) {
+            return String(str || '').replace(/[&<>"']/g, c => (
+              { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+            ));
           }
+
+          // Pulls the full analytics feed from the server (survives reloads,
+          // since it's read straight from the persisted job queue on disk).
+          async function loadAnalytics() {
+            const params = new URLSearchParams();
+            if (filterStatusEl.value) params.set('status', filterStatusEl.value);
+            if (filterPlatformEl.value) params.set('platform', filterPlatformEl.value);
+            params.set('limit', '200');
+
+            try {
+              const res = await fetch('/jobs?' + params.toString());
+              const data = await res.json();
+              renderAnalytics(data);
+            } catch (err) {
+              jobsBodyEl.innerHTML = '<tr><td colspan="6">Failed to load: ' + escapeHtml(err.message) + '</td></tr>';
+            }
+          }
+
+          function renderAnalytics(data) {
+            const s = data.summary;
+            statPillsEl.innerHTML =
+              '<span class="pill">' + s.total + ' total</span>' +
+              '<span class="pill done">' + s.done + ' done</span>' +
+              '<span class="pill failed">' + s.failed + ' failed</span>' +
+              '<span class="pill processing">' + s.processing + ' processing</span>' +
+              '<span class="pill pending">' + s.pending + ' pending</span>';
+
+            if (!data.jobs.length) {
+              jobsBodyEl.innerHTML = '<tr><td colspan="6">No posts queued yet.</td></tr>';
+              return;
+            }
+
+            jobsBodyEl.innerHTML = data.jobs.map(j => {
+              const detail = j.status === 'failed'
+                ? '<span class="error-text">' + escapeHtml(j.error || 'unknown error') + '</span>'
+                : j.status === 'done'
+                  ? (j.publicUrl ? '<a href="' + escapeHtml(j.publicUrl) + '" target="_blank" style="color:#93c5fd;">media</a>' : 'posted')
+                  : 'generates ' + escapeHtml((j.generateAt || '').replace('T', ' ').slice(0, 16));
+
+              return '<tr>' +
+                '<td><span class="status-badge ' + j.status + '">' + j.status + '</span></td>' +
+                '<td>' + escapeHtml(j.title) + '</td>' +
+                '<td>' + escapeHtml(j.mediaKind) + '</td>' +
+                '<td>' + escapeHtml(j.platform) + '</td>' +
+                '<td>' + escapeHtml((j.scheduledFor || '').replace('T', ' ').slice(0, 16)) + '</td>' +
+                '<td>' + detail + '</td>' +
+                '</tr>';
+            }).join('');
+          }
+
+          filterStatusEl.addEventListener('change', loadAnalytics);
+          filterPlatformEl.addEventListener('change', loadAnalytics);
+          refreshBtn.addEventListener('click', loadAnalytics);
 
           async function pollBatch(batchId) {
             try {
               const res = await fetch('/batch-status/' + batchId);
               const data = await res.json();
-              renderStatus(data);
+              loadAnalytics();
 
               if (data.pending === 0 && data.processing === 0) {
                 progressEl.textContent = 'Batch complete.';
@@ -718,13 +835,13 @@ The Prestige | Two magicians, one obsession, no mercy."></textarea>
             }).filter(i => i.title && i.hook);
 
             if (!items.length) {
-              resultsEl.textContent = 'No valid lines found. Use: Title | Hook';
+              progressEl.textContent = 'No valid lines found. Use: Title | Hook';
               return;
             }
 
             const startVal = document.getElementById('batchStart').value;
             if (!startVal) {
-              resultsEl.textContent = 'Pick a start time.';
+              progressEl.textContent = 'Pick a start time.';
               return;
             }
 
@@ -744,8 +861,6 @@ The Prestige | Two magicians, one obsession, no mercy."></textarea>
 
             btn.disabled = true;
             btn.textContent = 'Queuing ' + items.length + ' posts...';
-            resultsEl.textContent = '';
-            summaryEl.textContent = '';
             progressEl.textContent = 'Queuing...';
             if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 
@@ -758,22 +873,26 @@ The Prestige | Two magicians, one obsession, no mercy."></textarea>
               const data = await res.json();
 
               if (!res.ok) {
-                progressEl.textContent = '';
-                resultsEl.textContent = 'Error: ' + (data.error || 'unknown error');
+                progressEl.textContent = 'Error: ' + (data.error || 'unknown error');
                 return;
               }
 
-              progressEl.textContent = 'Queued. Generating each post shortly before its slot — checking progress every 5s...';
+              progressEl.textContent = 'Queued. Generating each post shortly before its slot — see the Analytics table below for live status.';
+              loadAnalytics();
               pollBatch(data.batchId);
               pollTimer = setInterval(() => pollBatch(data.batchId), 5000);
             } catch (err) {
-              progressEl.textContent = '';
-              resultsEl.textContent = 'Error: ' + err.message;
+              progressEl.textContent = 'Error: ' + err.message;
             } finally {
               btn.disabled = false;
               btn.textContent = 'Schedule Batch';
             }
           });
+
+          // Load history immediately on page open, and keep it fresh in the
+          // background in case jobs are firing from a previous session/reload.
+          loadAnalytics();
+          autoRefreshTimer = setInterval(loadAnalytics, 15000);
         </script>
       </body>
     </html>
@@ -901,6 +1020,7 @@ app.post('/schedule-batch', async (req, res) => {
       return {
         id: crypto.randomUUID(),
         batchId,
+        createdAt: new Date(now).toISOString(),
         title: item.title || '',
         hook: item.hook || '',
         template: item.template || template,
@@ -954,9 +1074,65 @@ app.get('/batch-status/:batchId', (req, res) => {
     done: jobs.filter(j => j.status === 'done').length,
     failed: jobs.filter(j => j.status === 'failed').length,
     jobs: jobs.map(j => ({
-      id: j.id, title: j.title, mediaKind: j.mediaKind,
+      id: j.id, title: j.title, mediaKind: j.mediaKind, platform: j.platform,
       scheduledFor: j.scheduledFor, generateAt: j.generateAt,
       status: j.status, error: j.error, result: j.result
+    }))
+  });
+});
+
+// All past batch runs, newest first — this is what survives a page reload.
+// The queue itself is persisted to disk, so this reflects everything ever
+// submitted, not just what's in the current browser session.
+app.get('/batches', (req, res) => {
+  const byBatch = {};
+  for (const j of queue) {
+    if (!byBatch[j.batchId]) {
+      byBatch[j.batchId] = {
+        batchId: j.batchId,
+        createdAt: j.createdAt,
+        platform: j.platform,
+        total: 0, pending: 0, processing: 0, done: 0, failed: 0
+      };
+    }
+    const b = byBatch[j.batchId];
+    b.total++;
+    b[j.status]++;
+  }
+  const batches = Object.values(byBatch).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+  res.json({ batches });
+});
+
+// Flat, filterable feed of every job ever queued — the actual analytics view.
+// Query params: ?status=done|failed|pending|processing, ?platform=tiktok, ?limit=100
+app.get('/jobs', (req, res) => {
+  const { status, platform, limit } = req.query;
+  let jobs = [...queue];
+
+  if (status) jobs = jobs.filter(j => j.status === status);
+  if (platform) jobs = jobs.filter(j => j.platform === platform);
+
+  jobs.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+  if (limit) jobs = jobs.slice(0, Math.max(parseInt(limit, 10) || 100, 1));
+
+  const summary = {
+    total: queue.length,
+    pending: queue.filter(j => j.status === 'pending').length,
+    processing: queue.filter(j => j.status === 'processing').length,
+    done: queue.filter(j => j.status === 'done').length,
+    failed: queue.filter(j => j.status === 'failed').length
+  };
+
+  res.json({
+    summary,
+    count: jobs.length,
+    jobs: jobs.map(j => ({
+      id: j.id, batchId: j.batchId, createdAt: j.createdAt,
+      title: j.title, mediaKind: j.mediaKind, platform: j.platform,
+      scheduledFor: j.scheduledFor, generateAt: j.generateAt,
+      status: j.status, error: j.error,
+      postId: j.result ? j.result.postId : null,
+      publicUrl: j.result ? j.result.publicUrl : null
     }))
   });
 });
