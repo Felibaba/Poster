@@ -10,7 +10,7 @@
 //     TMDB_API_KEY=your_tmdb_key
 //     ZERNIO_API_KEY=your_zernio_key
 //     ZERNIO_DEFAULT_ACCOUNT_ID=your_zernio_account_id   (optional default)
-//     ZERNIO_DEFAULT_PLATFORM=twitter                     (optional default)
+//     ZERNIO_DEFAULT_PLATFORM=tiktok                      (optional default)
 //   node app.js
 //   Open http://localhost:3000
 // ─────────────────────────────────────────────────────────────────
@@ -33,7 +33,7 @@ const TMDB_API_KEY = process.env.TMDB_API_KEY;
 const ZERNIO_API_KEY = process.env.ZERNIO_API_KEY;
 const ZERNIO_BASE = 'https://zernio.com/api/v1';
 const ZERNIO_DEFAULT_ACCOUNT_ID = process.env.ZERNIO_DEFAULT_ACCOUNT_ID || '';
-const ZERNIO_DEFAULT_PLATFORM = process.env.ZERNIO_DEFAULT_PLATFORM || 'twitter';
+const ZERNIO_DEFAULT_PLATFORM = process.env.ZERNIO_DEFAULT_PLATFORM || 'tiktok';
 
 // TikTok is a special case in Zernio's API: it needs a `tiktokSettings` object
 // at the TOP LEVEL of the post body (not inside platformSpecificData like every
@@ -692,6 +692,7 @@ The Prestige | Two magicians, one obsession, no mercy."></textarea>
           <div>
             <label>Zernio account ID</label>
             <input id="batchAccountId" placeholder="acc_xyz789" value="${ZERNIO_DEFAULT_ACCOUNT_ID}"/>
+            <p class="hint">Remembered in this browser after you type it once.</p>
           </div>
         </div>
 
@@ -740,6 +741,24 @@ The Prestige | Two magicians, one obsession, no mercy."></textarea>
           const filterStatusEl = document.getElementById('filterStatus');
           const filterPlatformEl = document.getElementById('filterPlatform');
           const refreshBtn = document.getElementById('refreshJobs');
+          const accountIdEl = document.getElementById('batchAccountId');
+          const platformEl = document.getElementById('batchPlatform');
+
+          // Remember accountId/platform in this browser so they don't need
+          // to be retyped every visit. Only kicks in if there's a saved value —
+          // the server-rendered ZERNIO_DEFAULT_ACCOUNT_ID/PLATFORM still wins
+          // on a fresh browser with nothing saved yet.
+          const savedAccountId = localStorage.getItem('zernioAccountId');
+          const savedPlatform = localStorage.getItem('zernioPlatform');
+          if (savedAccountId) accountIdEl.value = savedAccountId;
+          if (savedPlatform) platformEl.value = savedPlatform;
+
+          accountIdEl.addEventListener('input', () => {
+            localStorage.setItem('zernioAccountId', accountIdEl.value.trim());
+          });
+          platformEl.addEventListener('input', () => {
+            localStorage.setItem('zernioPlatform', platformEl.value.trim().toLowerCase());
+          });
 
           let pollTimer = null;
           let autoRefreshTimer = null;
@@ -855,7 +874,7 @@ The Prestige | Two magicians, one obsession, no mercy."></textarea>
               intervalMinutes: parseInt(document.getElementById('batchInterval').value, 10) || 10,
               leadMinutes: parseInt(document.getElementById('batchLeadMinutes').value, 10) || 5,
               startTime: new Date(startVal).toISOString(),
-              platform: document.getElementById('batchPlatform').value.trim(),
+              platform: document.getElementById('batchPlatform').value.trim().toLowerCase(),
               accountId: document.getElementById('batchAccountId').value.trim()
             };
 
@@ -994,6 +1013,20 @@ app.post('/schedule-batch', async (req, res) => {
     if (!platform) return res.status(400).json({ error: 'platform is required (e.g. "tiktok")' });
     if (!accountId) return res.status(400).json({ error: 'accountId is required (your Zernio account ID)' });
 
+    // Zernio's platform field is a lowercase-only enum — normalize so a form
+    // typo like "Tiktok" or "TIKTOK " doesn't fail every job in the batch.
+    const ZERNIO_PLATFORMS = [
+      'tiktok', 'instagram', 'facebook', 'youtube', 'linkedin', 'twitter',
+      'threads', 'pinterest', 'reddit', 'bluesky', 'googlebusiness',
+      'telegram', 'snapchat', 'whatsapp', 'discord', 'slack'
+    ];
+    const normalizedPlatform = String(platform).trim().toLowerCase();
+    if (!ZERNIO_PLATFORMS.includes(normalizedPlatform)) {
+      return res.status(400).json({
+        error: `platform "${platform}" is not valid — must be one of: ${ZERNIO_PLATFORMS.join(', ')}`
+      });
+    }
+
     const defaultMediaKind = mediaKind === 'video' ? 'video' : 'image';
     const spacingMs = Math.max(parseInt(intervalMinutes, 10) || 10, 1) * 60 * 1000;
     const leadMs = Math.max(parseInt(leadMinutes, 10) || 5, 1) * 60 * 1000;
@@ -1028,7 +1061,7 @@ app.post('/schedule-batch', async (req, res) => {
         lang: item.lang,
         mediaKind: itemMediaKind,
         videoSeconds,
-        platform,
+        platform: normalizedPlatform,
         accountId,
         timezone,
         scheduledFor: scheduledForIso,
